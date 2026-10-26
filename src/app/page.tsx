@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 
 interface ClonedReel {
   id: string;
@@ -21,6 +21,8 @@ export default function Home() {
   const [activeTab, setActiveTab] = useState<'create' | 'library'>('create');
   const [showPricingModal, setShowPricingModal] = useState(false);
   const [showAuthModal, setShowAuthModal] = useState(false);
+  const [showConfigModal, setShowConfigModal] = useState(false);
+  const [missingKeys, setMissingKeys] = useState<string[]>([]);
 
   // User & Credits state
   const [userEmail, setUserEmail] = useState('client@brand.com');
@@ -31,15 +33,20 @@ export default function Home() {
 
   // Reel Creation form states
   const [reelUrl, setReelUrl] = useState('https://www.instagram.com/reel/C8xYz1_sample_reel');
-  const [subjectName, setSubjectName] = useState('Royal Enfield GT 650');
-  const [selectedFile, setSelectedFile] = useState<string | null>('Client_Subject_Asset_01.jpg');
+  const [subjectName, setSubjectName] = useState('My Custom Subject');
+  const [selectedFileName, setSelectedFileName] = useState<string | null>(null);
+  const [subjectDataUrl, setSubjectDataUrl] = useState<string | null>(null);
   const [audioOption, setAudioOption] = useState<'original' | 'custom'>('original');
+  const [isDragging, setIsDragging] = useState(false);
 
   // Generation execution state
   const [isProcessing, setIsProcessing] = useState(false);
   const [progressPct, setProgressPct] = useState(20);
   const [progressText, setProgressText] = useState('Initializing spatial tracking...');
   const [clonedResult, setClonedResult] = useState<ClonedReel | null>(null);
+
+  // Hidden File input reference
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Fetch user details & library
   const fetchLibrary = async (email: string) => {
@@ -61,6 +68,36 @@ export default function Home() {
   useEffect(() => {
     fetchLibrary(userEmail);
   }, [userEmail]);
+
+  // Handle Real File Selection
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      processFile(e.target.files[0]);
+    }
+  };
+
+  const processFile = (file: File) => {
+    setSelectedFileName(file.name);
+    // Auto populate subject title if default
+    if (subjectName === 'My Custom Subject') {
+      const cleanName = file.name.replace(/\.[^/.]+$/, '').replace(/[-_]/g, ' ');
+      setSubjectName(cleanName);
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      setSubjectDataUrl(reader.result as string);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsDragging(false);
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+      processFile(e.dataTransfer.files[0]);
+    }
+  };
 
   // Handle Login / Switch Account
   const handleAuthSubmit = async (e: React.FormEvent) => {
@@ -104,7 +141,7 @@ export default function Home() {
   };
 
   // Trigger Generation
-  const handleStartGeneration = async () => {
+  const handleStartGeneration = async (forceDemoMode: boolean = false) => {
     if (credits <= 0) {
       setShowPricingModal(true);
       return;
@@ -112,19 +149,19 @@ export default function Home() {
 
     setIsProcessing(true);
     setProgressPct(20);
-    setProgressText('Downloading Instagram Reel & extracting motion vectors...');
+    setProgressText('Downloading Instagram Reel & extracting spatial motion vectors...');
 
-    // Progress simulation
+    // Progress simulation while API works
     const interval = setInterval(() => {
       setProgressPct((prev) => {
         if (prev === 20) {
-          setProgressText('Meta SAM 2 is isolating original subject contours...');
+          setProgressText('Meta SAM 2: Isolating original subject contours...');
           return 45;
         } else if (prev === 45) {
-          setProgressText('Diffusion Inpainting: Placing new subject in 3D perspective...');
+          setProgressText('Diffusion Inpainting: Placing replacement subject into 3D perspective...');
           return 75;
         } else if (prev === 75) {
-          setProgressText('Matching road reflections & syncing original audio beats...');
+          setProgressText('Matching scene reflections & syncing original audio beats...');
           return 90;
         }
         return prev;
@@ -140,6 +177,8 @@ export default function Home() {
           reelUrl,
           subjectName,
           audioOption,
+          customSubjectImage: subjectDataUrl,
+          forceDemo: forceDemoMode,
         }),
       });
 
@@ -152,7 +191,22 @@ export default function Home() {
         return;
       }
 
-      if (data.success) {
+      // If missing API keys on server
+      if (data.configRequired) {
+        setIsProcessing(false);
+        setMissingKeys(data.missingKeys || ['FAL_KEY', 'REPLICATE_API_TOKEN']);
+        setShowConfigModal(true);
+        return;
+      }
+
+      // If asynchronous job dispatched to Fal / Replicate
+      if (data.pending && data.jobId) {
+        setProgressText('AI GPU rendering in progress (Wan 2.1 / Kling)...');
+        pollJobStatus(data.jobId, data.provider);
+        return;
+      }
+
+      if (data.success && data.reel) {
         setProgressPct(100);
         setProgressText('Complete!');
         setTimeout(() => {
@@ -161,12 +215,46 @@ export default function Home() {
           setCredits(data.remainingCredits);
           fetchLibrary(userEmail);
         }, 500);
+      } else {
+        setIsProcessing(false);
+        alert(data.error || 'Failed to generate reel');
       }
     } catch (err) {
       clearInterval(interval);
       setIsProcessing(false);
-      alert('Error during generation. Please check your connection.');
+      alert('Error during generation. Please check your network connection.');
     }
+  };
+
+  // Poll status for real AI video jobs
+  const pollJobStatus = async (jobId: string, provider: 'fal' | 'replicate') => {
+    let attempts = 0;
+    const pollInterval = setInterval(async () => {
+      attempts += 1;
+      try {
+        const res = await fetch(`/api/reels/status?jobId=${jobId}&provider=${provider}&email=${encodeURIComponent(userEmail)}&subjectTitle=${encodeURIComponent(subjectName)}`);
+        const data = await res.json();
+
+        if (data.status === 'COMPLETED' && data.reel) {
+          clearInterval(pollInterval);
+          setProgressPct(100);
+          setProgressText('AI Video Generation Completed!');
+          setIsProcessing(false);
+          setClonedResult(data.reel);
+          fetchLibrary(userEmail);
+        } else if (data.status === 'FAILED') {
+          clearInterval(pollInterval);
+          setIsProcessing(false);
+          alert(`AI video generation failed: ${data.error}`);
+        } else if (attempts > 60) {
+          clearInterval(pollInterval);
+          setIsProcessing(false);
+          alert('Generation timed out. Please check your AI provider dashboard.');
+        }
+      } catch (err) {
+        console.error('Polling error:', err);
+      }
+    }, 3000);
   };
 
   return (
@@ -290,41 +378,78 @@ export default function Home() {
                     />
                   </div>
 
-                  {/* Input 2: Your New Subject */}
+                  {/* Input 2: Real File Upload for Subject */}
                   <div className="space-y-1.5">
                     <label className="text-xs font-bold text-neutral-300 tracking-wider flex items-center justify-between uppercase">
                       <span className="flex items-center gap-2">
                         <span className="w-2 h-2 bg-white rounded-full"></span>
-                        <span>2. Your New Subject (Any Size Photo/Video)</span>
+                        <span>2. Upload Your Subject (Photos or Video)</span>
                       </span>
+                      <span className="text-[10px] text-neutral-400 font-mono">ANY FORMAT</span>
                     </label>
 
-                    <div className="border-2 border-dashed border-neutral-800 hover:border-white rounded-2xl p-6 text-center bg-[#121212]/70 cursor-pointer transition-all group">
-                      <div className="w-10 h-10 mx-auto rounded-xl bg-neutral-900 border border-neutral-800 flex items-center justify-center text-lg text-white group-hover:scale-110 transition-transform">
-                        ⌘
-                      </div>
-                      <p className="mt-2 text-xs font-bold text-white tracking-wide">
-                        Drop Subject Photos or Video Here
-                      </p>
-                      <p className="text-[11px] text-neutral-400 mt-0.5">
-                        Vehicle, person, fashion, or any product (No size limit)
-                      </p>
+                    {/* Hidden Native File Input */}
+                    <input
+                      type="file"
+                      ref={fileInputRef}
+                      onChange={handleFileChange}
+                      accept="image/*,video/*"
+                      className="hidden"
+                    />
 
-                      <div className="mt-3 flex items-center justify-center gap-2">
-                        <input
-                          type="text"
-                          value={subjectName}
-                          onChange={(e) => setSubjectName(e.target.value)}
-                          placeholder="Subject label (e.g. Royal Enfield GT 650)"
-                          className="bg-neutral-900 border border-neutral-700 px-3 py-1 rounded-lg text-xs text-white text-center font-mono focus:outline-none focus:border-white"
-                        />
-                      </div>
-
-                      {selectedFile && (
-                        <div className="mt-2.5 inline-flex items-center gap-1.5 bg-white text-black px-2.5 py-0.5 rounded-full text-[10px] font-bold">
-                          <span>✓ {selectedFile} attached</span>
+                    {/* Interactive Drop Box */}
+                    <div
+                      onClick={() => fileInputRef.current?.click()}
+                      onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+                      onDragLeave={() => setIsDragging(false)}
+                      onDrop={handleDrop}
+                      className={`border-2 border-dashed rounded-2xl p-6 text-center cursor-pointer transition-all group relative overflow-hidden ${
+                        isDragging ? 'border-white bg-neutral-900' : 'border-neutral-800 hover:border-white bg-[#121212]/70'
+                      }`}
+                    >
+                      {subjectDataUrl ? (
+                        <div className="flex flex-col items-center gap-3">
+                          <div className="w-24 h-24 rounded-xl overflow-hidden border border-white/40 shadow-xl bg-black">
+                            {subjectDataUrl.startsWith('data:video') ? (
+                              <video src={subjectDataUrl} className="w-full h-full object-cover" autoPlay muted loop />
+                            ) : (
+                              <img src={subjectDataUrl} alt="Preview" className="w-full h-full object-cover" />
+                            )}
+                          </div>
+                          <div>
+                            <div className="text-xs font-bold text-white flex items-center justify-center gap-1.5">
+                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                              <span>{selectedFileName || 'Subject File Attached'}</span>
+                            </div>
+                            <p className="text-[10px] text-neutral-400 mt-0.5">Click or drop to replace file</p>
+                          </div>
+                        </div>
+                      ) : (
+                        <div>
+                          <div className="w-10 h-10 mx-auto rounded-xl bg-neutral-900 border border-neutral-800 flex items-center justify-center text-lg text-white group-hover:scale-110 transition-transform">
+                            📁
+                          </div>
+                          <p className="mt-2 text-xs font-bold text-white tracking-wide">
+                            Click or Drop Your Photos or Video Here
+                          </p>
+                          <p className="text-[11px] text-neutral-400 mt-0.5">
+                            Vehicle, person, fashion, watch, or any product
+                          </p>
+                          <span className="mt-3 inline-block bg-neutral-900 border border-neutral-700 text-neutral-300 text-[10px] font-mono px-3 py-1 rounded-full">
+                            Browse Files
+                          </span>
                         </div>
                       )}
+                    </div>
+
+                    <div className="pt-1">
+                      <input
+                        type="text"
+                        value={subjectName}
+                        onChange={(e) => setSubjectName(e.target.value)}
+                        placeholder="Subject name (e.g. Matte Black Yamaha R15)"
+                        className="w-full bg-[#121212] border border-neutral-800 focus:border-white px-3 py-2 rounded-xl text-xs text-white placeholder-neutral-500 font-mono focus:outline-none"
+                      />
                     </div>
                   </div>
 
@@ -332,7 +457,7 @@ export default function Home() {
                   <div className="space-y-1.5">
                     <label className="text-xs font-bold text-neutral-300 tracking-wider flex items-center gap-2 uppercase">
                       <span className="w-2 h-2 bg-white rounded-full"></span>
-                      <span>3. Audio Preference (റീലിന്റെ ഓഡിയോ വേണമോ?)</span>
+                      <span>3. Audio Preference</span>
                     </label>
 
                     <div className="grid grid-cols-2 gap-3">
@@ -387,7 +512,7 @@ export default function Home() {
                   {/* Action Button */}
                   <div className="pt-2">
                     <button
-                      onClick={handleStartGeneration}
+                      onClick={() => handleStartGeneration(false)}
                       className="w-full py-4 bg-white hover:bg-neutral-200 text-black font-black text-xs tracking-widest uppercase rounded-2xl shadow-xl transition-all flex items-center justify-center gap-2"
                     >
                       <span>CLONE REEL (CONSUMES 1 CREDIT)</span>
@@ -436,7 +561,11 @@ export default function Home() {
                     <p className="text-xs text-neutral-400 font-mono">Added to your client library</p>
                   </div>
                   <button
-                    onClick={() => setClonedResult(null)}
+                    onClick={() => {
+                      setClonedResult(null);
+                      setSubjectDataUrl(null);
+                      setSelectedFileName(null);
+                    }}
                     className="border border-neutral-800 hover:border-neutral-600 text-xs px-3 py-1.5 rounded-xl text-neutral-400 font-mono"
                   >
                     + New Reel
@@ -457,17 +586,26 @@ export default function Home() {
                   <div className="space-y-1 text-center w-full">
                     <span className="text-[10px] font-bold text-white font-mono">CLONED OUTPUT</span>
                     <div className="reel-aspect w-full max-w-[180px] mx-auto bg-black border-2 border-white rounded-xl overflow-hidden relative shadow-lg">
-                      <img
-                        src={clonedResult.previewUrl}
-                        alt="Cloned"
-                        className="w-full h-full object-cover"
-                      />
+                      {clonedResult.previewUrl.startsWith('data:video') || clonedResult.previewUrl.endsWith('.mp4') ? (
+                        <video src={clonedResult.previewUrl} className="w-full h-full object-cover" autoPlay muted loop controls />
+                      ) : (
+                        <img
+                          src={clonedResult.previewUrl}
+                          alt="Cloned"
+                          className="w-full h-full object-cover"
+                        />
+                      )}
                     </div>
                   </div>
                 </div>
 
                 <button
-                  onClick={() => alert(`Downloading ${clonedResult.subjectTitle} (1080x1920 MP4)...`)}
+                  onClick={() => {
+                    const a = document.createElement('a');
+                    a.href = clonedResult.previewUrl;
+                    a.download = `FNM_${clonedResult.subjectTitle.replace(/\s+/g, '_')}.mp4`;
+                    a.click();
+                  }}
                   className="w-full py-3.5 bg-white hover:bg-neutral-200 text-black font-black text-xs uppercase tracking-widest rounded-xl flex items-center justify-center gap-2"
                 >
                   <span>DOWNLOAD 1080P HD (MP4)</span>
@@ -559,6 +697,75 @@ export default function Home() {
           FNM AI • CLONE ANY REEL • HIGH-DEFINITION SPATIAL INPAINTING
         </footer>
       </div>
+
+      {/* MODAL: AI API KEY CONFIGURATION GUIDE */}
+      {showConfigModal && (
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-[#0d0d0d] border border-neutral-700 max-w-lg w-full p-6 md:p-8 rounded-3xl mono-glow space-y-5 relative font-sans">
+            <button
+              onClick={() => setShowConfigModal(false)}
+              className="absolute top-4 right-4 text-neutral-500 hover:text-white text-lg"
+            >
+              ✕
+            </button>
+
+            <div className="space-y-1">
+              <span className="text-[10px] font-mono uppercase tracking-widest text-amber-400 bg-amber-400/10 border border-amber-400/20 px-2.5 py-0.5 rounded-full">
+                AI ENGINE SETUP
+              </span>
+              <h3 className="text-xl font-black text-white uppercase tracking-wider pt-2">
+                Connect AI Video GPU
+              </h3>
+              <p className="text-xs text-neutral-400">
+                To perform real video-to-video inpainting, connect a serverless AI provider.
+              </p>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <div className="p-3.5 bg-neutral-900/90 border border-neutral-800 rounded-2xl space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-white">Recommended: Fal.ai (Free Trial Available)</span>
+                  <span className="text-[10px] font-mono text-emerald-400">Fastest</span>
+                </div>
+                <p className="text-[11px] text-neutral-400">
+                  Offers free trial credits upon signup. Supports <b>Wan 2.1 Video-to-Video</b> and <b>SAM 2</b>.
+                </p>
+                <div className="text-[11px] font-mono text-neutral-300 bg-black/60 p-2 rounded-lg border border-neutral-800">
+                  Environment Variable: <span className="text-white font-bold">FAL_KEY</span>
+                </div>
+              </div>
+
+              <div className="p-3.5 bg-neutral-900/90 border border-neutral-800 rounded-2xl space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-white">Alternative: Replicate</span>
+                  <span className="text-[10px] font-mono text-neutral-400">Pay-as-you-go</span>
+                </div>
+                <p className="text-[11px] text-neutral-400">
+                  Supports <b>Lightricks LTX Video</b>, <b>Kling</b>, and <b>Hunyuan Video</b>.
+                </p>
+                <div className="text-[11px] font-mono text-neutral-300 bg-black/60 p-2 rounded-lg border border-neutral-800">
+                  Environment Variable: <span className="text-white font-bold">REPLICATE_API_TOKEN</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-2 pt-1">
+              <button
+                onClick={() => {
+                  setShowConfigModal(false);
+                  handleStartGeneration(true); // Run with user's uploaded asset in instant render mode
+                }}
+                className="w-full py-3 bg-white hover:bg-neutral-200 text-black font-black text-xs uppercase tracking-wider rounded-xl transition-all"
+              >
+                Test Now With My Uploaded Subject (Local Render)
+              </button>
+              <p className="text-[10px] text-neutral-500 text-center font-mono">
+                Add keys in Vercel: Project Settings → Environment Variables
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* MODAL 1: BUY CREDITS (FIRST PLAN ₹119) */}
       {showPricingModal && (
