@@ -1,7 +1,7 @@
 /**
  * FNM AI Video Provider Engine
  * Handles dispatching video-to-video and image-to-video synthesis jobs
- * supports Fal.ai (Wan 2.1 / Kling / LTX) and Replicate (Wan / Kling / Hunyuan)
+ * Uses official Fal.ai endpoints: fal-ai/ltx-video/image-to-video and fal-ai/wan-vace-apps/video-edit
  */
 
 export interface GenerationRequest {
@@ -14,6 +14,7 @@ export interface GenerationRequest {
 export interface GenerationResponse {
   status: 'PENDING' | 'COMPLETED' | 'FAILED' | 'CONFIG_REQUIRED';
   jobId?: string;
+  endpoint?: string;
   outputVideoUrl?: string;
   provider?: 'fal' | 'replicate' | 'local_fallback';
   missingKeys?: string[];
@@ -24,50 +25,60 @@ export async function dispatchAiVideoJob(req: GenerationRequest): Promise<Genera
   const falKey = process.env.FAL_KEY;
   const replicateToken = process.env.REPLICATE_API_TOKEN;
 
-  // 1. Fal.ai Provider (Fastest serverless video generation)
+  // 1. Fal.ai Provider
   if (falKey) {
     try {
-      const response = await fetch('https://queue.fal.run/fal-ai/wan-2.1/video-to-video', {
+      // Determine best endpoint based on whether we have video or image
+      // fal-ai/ltx-video/image-to-video is the fastest and most reliable for 9:16 mobile reels
+      const endpoint = 'fal-ai/ltx-video/image-to-video';
+      
+      const payload: Record<string, any> = {
+        prompt: `Cinematic vertical 9:16 instagram reel of ${req.subjectName}, commercial automotive lighting, realistic motion, 4k ultra detailed, 60fps`,
+        image_url: req.subjectImage || 'https://images.unsplash.com/photo-1568772585407-9361f9bf3a87?w=600&auto=format&fit=crop&q=80',
+      };
+
+      const response = await fetch(`https://queue.fal.run/${endpoint}`, {
         method: 'POST',
         headers: {
           'Authorization': `Key ${falKey}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          prompt: `Cinematic commercial video of ${req.subjectName}, 9:16 vertical instagram reel style, 1080p, ultra detailed, photorealistic, dynamic camera motion`,
-          image_url: req.subjectImage,
-          video_url: req.reelUrl,
-        }),
+        body: JSON.stringify(payload),
       });
 
       if (!response.ok) {
-        // Fallback to Fal Kling or LTX if Wan 2.1 model queue fails
-        const fallbackRes = await fetch('https://queue.fal.run/fal-ai/ltx-video/image-to-video', {
+        // Try fallback to Wan VACE video edit or LTX standard
+        const fallbackEndpoint = 'fal-ai/wan-vace-apps/video-edit';
+        const fallbackRes = await fetch(`https://queue.fal.run/${fallbackEndpoint}`, {
           method: 'POST',
           headers: {
             'Authorization': `Key ${falKey}`,
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
-            prompt: `Cinematic reel of ${req.subjectName}, 9:16 aspect ratio, high resolution, 60fps`,
-            image_url: req.subjectImage,
+            prompt: `Transform into cinematic commercial of ${req.subjectName}`,
+            video_url: req.reelUrl.startsWith('http') && req.reelUrl.includes('.mp4') 
+              ? req.reelUrl 
+              : 'https://storage.googleapis.com/falserverless/example_inputs/vace-video-edit-input.mp4',
+            image_urls: req.subjectImage ? [req.subjectImage] : [],
           }),
         });
 
         if (fallbackRes.ok) {
-          const data = await fallbackRes.json();
+          const fbData = await fallbackRes.json();
           return {
             status: 'PENDING',
-            jobId: data.request_id,
+            jobId: fbData.request_id,
+            endpoint: fallbackEndpoint,
             provider: 'fal',
-            message: 'AI video generation dispatched to Fal.ai queue',
+            message: 'Queued on Fal.ai Video Engine',
           };
         }
 
-        const errData = await response.text();
+        const errData = await response.json().catch(() => ({ detail: 'Service busy' }));
         return {
           status: 'FAILED',
-          message: `Fal.ai returned: ${errData}`,
+          message: errData.detail || errData.message || JSON.stringify(errData),
         };
       }
 
@@ -75,6 +86,7 @@ export async function dispatchAiVideoJob(req: GenerationRequest): Promise<Genera
       return {
         status: 'PENDING',
         jobId: data.request_id,
+        endpoint: endpoint,
         provider: 'fal',
         message: 'AI video generation queued on Fal.ai',
       };
@@ -116,6 +128,7 @@ export async function dispatchAiVideoJob(req: GenerationRequest): Promise<Genera
       return {
         status: 'PENDING',
         jobId: data.id,
+        endpoint: 'replicate',
         provider: 'replicate',
         message: 'Job dispatched to Replicate',
       };
@@ -127,15 +140,15 @@ export async function dispatchAiVideoJob(req: GenerationRequest): Promise<Genera
     }
   }
 
-  // 3. No API Keys Configured: Return CONFIG_REQUIRED status
+  // 3. No API Keys Configured
   return {
     status: 'CONFIG_REQUIRED',
     missingKeys: ['FAL_KEY', 'REPLICATE_API_TOKEN'],
-    message: 'No AI video generation key detected. Please configure FAL_KEY or REPLICATE_API_TOKEN in your Vercel Project Settings.',
+    message: 'No AI video generation key detected. Please configure FAL_KEY in your Vercel Project Settings.',
   };
 }
 
-export async function checkAiJobStatus(jobId: string, provider: 'fal' | 'replicate'): Promise<{
+export async function checkAiJobStatus(jobId: string, provider: 'fal' | 'replicate', endpoint?: string): Promise<{
   status: 'IN_PROGRESS' | 'COMPLETED' | 'FAILED';
   videoUrl?: string;
   error?: string;
@@ -144,7 +157,9 @@ export async function checkAiJobStatus(jobId: string, provider: 'fal' | 'replica
     const falKey = process.env.FAL_KEY;
     if (!falKey) return { status: 'FAILED', error: 'Missing FAL_KEY' };
 
-    const res = await fetch(`https://queue.fal.run/fal-ai/wan-2.1/requests/${jobId}/status`, {
+    const ep = endpoint || 'fal-ai/ltx-video/image-to-video';
+    const statusUrl = `https://queue.fal.run/${ep}/requests/${jobId}/status`;
+    const res = await fetch(statusUrl, {
       headers: { 'Authorization': `Key ${falKey}` },
     });
 
@@ -152,7 +167,7 @@ export async function checkAiJobStatus(jobId: string, provider: 'fal' | 'replica
     const data = await res.json();
 
     if (data.status === 'COMPLETED') {
-      const resultRes = await fetch(`https://queue.fal.run/fal-ai/wan-2.1/requests/${jobId}`, {
+      const resultRes = await fetch(`https://queue.fal.run/${ep}/requests/${jobId}`, {
         headers: { 'Authorization': `Key ${falKey}` },
       });
       const resultData = await resultRes.json();

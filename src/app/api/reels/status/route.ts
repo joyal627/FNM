@@ -7,6 +7,7 @@ export async function GET(req: Request) {
     const { searchParams } = new URL(req.url);
     const jobId = searchParams.get('jobId');
     const provider = searchParams.get('provider') as 'fal' | 'replicate';
+    const endpoint = searchParams.get('endpoint') || undefined;
     const email = searchParams.get('email') || 'client@brand.com';
     const subjectTitle = searchParams.get('subjectTitle') || 'Custom Subject';
 
@@ -14,7 +15,7 @@ export async function GET(req: Request) {
       return NextResponse.json({ error: 'Missing jobId or provider' }, { status: 400 });
     }
 
-    const result = await checkAiJobStatus(jobId, provider);
+    const result = await checkAiJobStatus(jobId, provider, endpoint);
 
     if (result.status === 'COMPLETED' && result.videoUrl) {
       const newReel: ClonedReel = {

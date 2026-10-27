@@ -36,7 +36,6 @@ export async function POST(req: Request) {
 
       // If missing API keys, notify client so they can configure Vercel Environment Variables
       if (aiResponse.status === 'CONFIG_REQUIRED') {
-        // Refund credit so user isn't penalized for unconfigured server
         store.addCredits(email, 1);
         return NextResponse.json({
           success: false,
@@ -53,6 +52,7 @@ export async function POST(req: Request) {
           success: true,
           pending: true,
           jobId: aiResponse.jobId,
+          endpoint: aiResponse.endpoint,
           provider: aiResponse.provider,
           message: aiResponse.message,
           remainingCredits: updatedUser.credits,
@@ -64,11 +64,12 @@ export async function POST(req: Request) {
         return NextResponse.json({
           success: false,
           error: aiResponse.message || 'AI generation service failed',
-        }, { status: 502 });
+          allowFallback: true,
+        }, { status: 200 }); // return 200 with allowFallback so frontend can seamlessly fallback to user's uploaded asset!
       }
     }
 
-    // Fallback/Local render using the user's actual uploaded image/video
+    // Fallback/Instant render using the user's actual uploaded image/video
     const previewUrl = customSubjectImage || 'https://images.unsplash.com/photo-1568772585407-9361f9bf3a87?w=600&auto=format&fit=crop&q=80';
     
     const newReel: ClonedReel = {

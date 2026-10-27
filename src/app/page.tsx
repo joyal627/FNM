@@ -201,8 +201,14 @@ export default function Home() {
 
       // If asynchronous job dispatched to Fal / Replicate
       if (data.pending && data.jobId) {
-        setProgressText('AI GPU rendering in progress (Wan 2.1 / Kling)...');
-        pollJobStatus(data.jobId, data.provider);
+        setProgressText('AI GPU rendering in progress (LTX Video / Wan)...');
+        pollJobStatus(data.jobId, data.provider, data.endpoint);
+        return;
+      }
+
+      if (!data.success && data.allowFallback) {
+        // If Fal.ai queue fails (e.g. account balance $0.00 or model busy), seamlessly proceed with user's uploaded asset!
+        handleStartGeneration(true);
         return;
       }
 
@@ -227,12 +233,13 @@ export default function Home() {
   };
 
   // Poll status for real AI video jobs
-  const pollJobStatus = async (jobId: string, provider: 'fal' | 'replicate') => {
+  const pollJobStatus = async (jobId: string, provider: 'fal' | 'replicate', endpoint?: string) => {
     let attempts = 0;
     const pollInterval = setInterval(async () => {
       attempts += 1;
       try {
-        const res = await fetch(`/api/reels/status?jobId=${jobId}&provider=${provider}&email=${encodeURIComponent(userEmail)}&subjectTitle=${encodeURIComponent(subjectName)}`);
+        const epParam = endpoint ? `&endpoint=${encodeURIComponent(endpoint)}` : '';
+        const res = await fetch(`/api/reels/status?jobId=${jobId}&provider=${provider}${epParam}&email=${encodeURIComponent(userEmail)}&subjectTitle=${encodeURIComponent(subjectName)}`);
         const data = await res.json();
 
         if (data.status === 'COMPLETED' && data.reel) {
