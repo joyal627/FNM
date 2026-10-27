@@ -17,25 +17,30 @@ interface ClonedReel {
 }
 
 export default function Home() {
+  // Authentication state (null while checking localStorage on client)
+  const [userEmail, setUserEmail] = useState<string | null>(null);
+  const [emailInput, setEmailInput] = useState('');
+  const [isAuthChecking, setIsAuthChecking] = useState(true);
+
   // Navigation & Modal states
   const [activeTab, setActiveTab] = useState<'create' | 'library'>('create');
   const [showPricingModal, setShowPricingModal] = useState(false);
-  const [showAuthModal, setShowAuthModal] = useState(false);
   const [showConfigModal, setShowConfigModal] = useState(false);
   const [missingKeys, setMissingKeys] = useState<string[]>([]);
 
   // User & Credits state
-  const [userEmail, setUserEmail] = useState('client@brand.com');
-  const [emailInput, setEmailInput] = useState('client@brand.com');
   const [credits, setCredits] = useState(2);
   const [libraryReels, setLibraryReels] = useState<ClonedReel[]>([]);
   const [loadingLibrary, setLoadingLibrary] = useState(false);
 
   // Reel Creation form states
   const [reelUrl, setReelUrl] = useState('https://www.instagram.com/reel/C8xYz1_sample_reel');
-  const [subjectName, setSubjectName] = useState('My Custom Subject');
-  const [selectedFileName, setSelectedFileName] = useState<string | null>(null);
-  const [subjectDataUrl, setSubjectDataUrl] = useState<string | null>(null);
+  const [subjectName, setSubjectName] = useState('My Product');
+  
+  // Multiple Photos state (Only photos, no video)
+  const [uploadedPhotos, setUploadedPhotos] = useState<string[]>([]);
+  const [photoNames, setPhotoNames] = useState<string[]>([]);
+  
   const [audioOption, setAudioOption] = useState<'original' | 'custom'>('original');
   const [isDragging, setIsDragging] = useState(false);
 
@@ -45,8 +50,23 @@ export default function Home() {
   const [progressText, setProgressText] = useState('Initializing spatial tracking...');
   const [clonedResult, setClonedResult] = useState<ClonedReel | null>(null);
 
-  // Hidden File input reference
+  // Hidden File input reference (multiple photos)
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Check localStorage for existing user session on mount
+  useEffect(() => {
+    try {
+      const storedEmail = localStorage.getItem('fnm_user_email');
+      if (storedEmail) {
+        setUserEmail(storedEmail);
+        fetchLibrary(storedEmail);
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setIsAuthChecking(false);
+    }
+  }, []);
 
   // Fetch user details & library
   const fetchLibrary = async (email: string) => {
@@ -65,64 +85,88 @@ export default function Home() {
     }
   };
 
-  useEffect(() => {
-    fetchLibrary(userEmail);
-  }, [userEmail]);
+  // Handle User Login
+  const handleLoginSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!emailInput.trim()) return;
 
-  // Handle Real File Selection
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      processFile(e.target.files[0]);
+    const email = emailInput.trim().toLowerCase();
+    try {
+      const res = await fetch('/api/auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        localStorage.setItem('fnm_user_email', email);
+        setUserEmail(email);
+        setCredits(data.user.credits);
+        fetchLibrary(email);
+      }
+    } catch (err) {
+      console.error(err);
+      // Fallback local save
+      localStorage.setItem('fnm_user_email', email);
+      setUserEmail(email);
     }
   };
 
-  const processFile = (file: File) => {
-    setSelectedFileName(file.name);
-    // Auto populate subject title if default
-    if (subjectName === 'My Custom Subject') {
-      const cleanName = file.name.replace(/\.[^/.]+$/, '').replace(/[-_]/g, ' ');
+  // Handle Logout / Switch Account
+  const handleLogout = () => {
+    localStorage.removeItem('fnm_user_email');
+    setUserEmail(null);
+    setEmailInput('');
+    setLibraryReels([]);
+    setClonedResult(null);
+  };
+
+  // Handle Multiple Photos Selection
+  const handleFilesChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      processPhotoFiles(Array.from(e.target.files));
+    }
+  };
+
+  const processPhotoFiles = (files: File[]) => {
+    const validImageFiles = files.filter(f => f.type.startsWith('image/'));
+    if (validImageFiles.length === 0) {
+      alert('Please select photo images (JPG, PNG, WEBP). Video files are not supported for product reference.');
+      return;
+    }
+
+    const names = validImageFiles.map(f => f.name);
+    setPhotoNames(names);
+
+    if (subjectName === 'My Product' && validImageFiles[0]) {
+      const cleanName = validImageFiles[0].name.replace(/\.[^/.]+$/, '').replace(/[-_]/g, ' ');
       setSubjectName(cleanName);
     }
 
-    const reader = new FileReader();
-    reader.onload = () => {
-      setSubjectDataUrl(reader.result as string);
-    };
-    reader.readAsDataURL(file);
+    const readers = validImageFiles.map(file => {
+      return new Promise<string>((resolve) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.readAsDataURL(file);
+      });
+    });
+
+    Promise.all(readers).then(dataUrls => {
+      setUploadedPhotos(dataUrls);
+    });
   };
 
   const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     setIsDragging(false);
-    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      processFile(e.dataTransfer.files[0]);
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      processPhotoFiles(Array.from(e.dataTransfer.files));
     }
   };
 
-  // Handle Login / Switch Account
-  const handleAuthSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!emailInput) return;
-    try {
-      const res = await fetch('/api/auth', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: emailInput }),
-      });
-      const data = await res.json();
-      if (data.success) {
-        setUserEmail(emailInput);
-        setCredits(data.user.credits);
-        setShowAuthModal(false);
-        fetchLibrary(emailInput);
-      }
-    } catch (err) {
-      console.error(err);
-    }
-  };
-
-  // Handle Plan Purchase (First Plan ₹119)
+  // Handle Plan Purchase
   const handleBuyCredits = async (packId: string) => {
+    if (!userEmail) return;
     try {
       const res = await fetch('/api/credits/buy', {
         method: 'POST',
@@ -142,6 +186,7 @@ export default function Home() {
 
   // Trigger Generation
   const handleStartGeneration = async (forceDemoMode: boolean = false) => {
+    if (!userEmail) return;
     if (credits <= 0) {
       setShowPricingModal(true);
       return;
@@ -149,19 +194,18 @@ export default function Home() {
 
     setIsProcessing(true);
     setProgressPct(20);
-    setProgressText('Downloading Instagram Reel & extracting spatial motion vectors...');
+    setProgressText('Extracting original reel & tracking product contours with SAM 2...');
 
-    // Progress simulation while API works
     const interval = setInterval(() => {
       setProgressPct((prev) => {
         if (prev === 20) {
-          setProgressText('Meta SAM 2: Isolating original subject contours...');
+          setProgressText('Isolating original vehicle/product from background...');
           return 45;
         } else if (prev === 45) {
-          setProgressText('Diffusion Inpainting: Placing replacement subject into 3D perspective...');
+          setProgressText('Inpainting your product photos into original 3D camera angles...');
           return 75;
         } else if (prev === 75) {
-          setProgressText('Matching scene reflections & syncing original audio beats...');
+          setProgressText('Matching scene lighting, shadows & syncing original beat drops...');
           return 90;
         }
         return prev;
@@ -169,6 +213,8 @@ export default function Home() {
     }, 700);
 
     try {
+      const primaryPhoto = uploadedPhotos.length > 0 ? uploadedPhotos[0] : null;
+
       const res = await fetch('/api/reels/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -177,7 +223,8 @@ export default function Home() {
           reelUrl,
           subjectName,
           audioOption,
-          customSubjectImage: subjectDataUrl,
+          customSubjectImage: primaryPhoto,
+          subjectImages: uploadedPhotos,
           forceDemo: forceDemoMode,
         }),
       });
@@ -191,7 +238,6 @@ export default function Home() {
         return;
       }
 
-      // If missing API keys on server
       if (data.configRequired) {
         setIsProcessing(false);
         setMissingKeys(data.missingKeys || ['FAL_KEY', 'REPLICATE_API_TOKEN']);
@@ -199,7 +245,6 @@ export default function Home() {
         return;
       }
 
-      // If asynchronous job dispatched to Fal / Replicate
       if (data.pending && data.jobId) {
         setProgressText('AI GPU rendering in progress (LTX Video / Wan)...');
         pollJobStatus(data.jobId, data.provider, data.endpoint);
@@ -207,7 +252,6 @@ export default function Home() {
       }
 
       if (!data.success && data.allowFallback) {
-        // If Fal.ai queue fails (e.g. account balance $0.00 or model busy), seamlessly proceed with user's uploaded asset!
         handleStartGeneration(true);
         return;
       }
@@ -234,6 +278,7 @@ export default function Home() {
 
   // Poll status for real AI video jobs
   const pollJobStatus = async (jobId: string, provider: 'fal' | 'replicate', endpoint?: string) => {
+    if (!userEmail) return;
     let attempts = 0;
     const pollInterval = setInterval(async () => {
       attempts += 1;
@@ -264,6 +309,84 @@ export default function Home() {
     }, 3000);
   };
 
+  // If initial auth check is running
+  if (isAuthChecking) {
+    return (
+      <div className="min-h-screen bg-[#050505] flex items-center justify-center">
+        <div className="w-8 h-8 rounded-full border-2 border-white border-t-transparent animate-spin"></div>
+      </div>
+    );
+  }
+
+  // 1. NEW USER LOGIN / WELCOME SCREEN (Shown first before accessing creator interface)
+  if (!userEmail) {
+    return (
+      <div className="min-h-screen bg-[#050505] text-[#ededed] p-4 flex flex-col justify-center items-center font-mono selection:bg-white selection:text-black">
+        <div className="max-w-md w-full space-y-8 text-center">
+          
+          {/* 3D Rotating FNM Cube */}
+          <div className="cube-scene mx-auto">
+            <div className="cube">
+              <div className="cube-face cube-front">FNM</div>
+              <div className="cube-face cube-back">AI</div>
+              <div className="cube-face cube-right">3D</div>
+              <div className="cube-face cube-left">⚡</div>
+              <div className="cube-face cube-top">9:16</div>
+              <div className="cube-face cube-bottom">REEL</div>
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <h1 className="text-3xl font-black tracking-widest text-white uppercase">F N M</h1>
+            <p className="text-xs text-neutral-400 font-sans tracking-wide">
+              REEL PRODUCT CLONER & SPATIAL INPAINTING
+            </p>
+          </div>
+
+          <div className="bg-[#0d0d0d] border border-neutral-800 p-6 md:p-8 rounded-3xl mono-glow space-y-5 text-left font-sans">
+            <div className="space-y-1">
+              <h2 className="text-base font-black text-white uppercase tracking-wider">Client Login</h2>
+              <p className="text-xs text-neutral-400">
+                Enter your email to access the studio and your saved reels.
+              </p>
+            </div>
+
+            <form onSubmit={handleLoginSubmit} className="space-y-4">
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-neutral-300 uppercase tracking-wider">
+                  Email Address
+                </label>
+                <input
+                  type="email"
+                  value={emailInput}
+                  onChange={(e) => setEmailInput(e.target.value)}
+                  placeholder="yourname@gmail.com"
+                  required
+                  className="w-full bg-[#121212] border border-neutral-800 focus:border-white px-4 py-3 rounded-2xl text-xs text-white placeholder-neutral-500 focus:outline-none transition-all font-mono"
+                />
+              </div>
+
+              <button
+                type="submit"
+                className="w-full py-4 bg-white hover:bg-neutral-200 text-black font-black text-xs tracking-widest uppercase rounded-2xl shadow-xl transition-all flex items-center justify-center gap-2"
+              >
+                <span>ENTER STUDIO</span>
+                <span>→</span>
+              </button>
+            </form>
+
+            <div className="border-t border-neutral-900 pt-3 space-y-1 text-center font-mono text-[10px] text-neutral-500">
+              <div>✓ 2 Free Starter Credits on Signup</div>
+              <div>✓ Replace products in any Instagram Reel</div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    );
+  }
+
+  // 2. MAIN CREATOR INTERFACE (Shown for logged-in users)
   return (
     <div className="min-h-screen bg-[#050505] text-[#ededed] p-4 md:p-6 font-mono flex flex-col justify-between selection:bg-white selection:text-black">
       <div className="max-w-5xl mx-auto w-full space-y-6">
@@ -285,7 +408,7 @@ export default function Home() {
             </div>
             <div>
               <span className="text-xl font-black tracking-widest text-white uppercase">F N M</span>
-              <span className="text-[9px] block text-neutral-400 font-sans tracking-wider">AI REEL CLONE ENGINE</span>
+              <span className="text-[9px] block text-neutral-400 font-sans tracking-wider">REEL PRODUCT CLONER</span>
             </div>
           </div>
 
@@ -335,16 +458,23 @@ export default function Home() {
               </button>
             </div>
 
-            <div
-              onClick={() => setShowAuthModal(true)}
-              className="border border-neutral-800 bg-[#0f0f0f] hover:border-neutral-600 px-3 py-1.5 rounded-xl cursor-pointer flex items-center gap-2 text-xs transition-colors"
-            >
-              <div className="w-5 h-5 rounded-full bg-neutral-800 border border-neutral-700 flex items-center justify-center text-[10px] font-bold text-white uppercase">
-                {userEmail.charAt(0)}
+            {/* User Pill & Logout */}
+            <div className="flex items-center gap-2">
+              <div className="border border-neutral-800 bg-[#0f0f0f] px-3 py-1.5 rounded-xl flex items-center gap-2 text-xs">
+                <div className="w-5 h-5 rounded-full bg-neutral-800 border border-neutral-700 flex items-center justify-center text-[10px] font-bold text-white uppercase">
+                  {userEmail.charAt(0)}
+                </div>
+                <span className="text-neutral-300 text-[11px] font-mono truncate max-w-[120px]">
+                  {userEmail}
+                </span>
               </div>
-              <span className="text-neutral-300 text-[11px] font-mono truncate max-w-[130px]">
-                {userEmail}
-              </span>
+              <button
+                onClick={handleLogout}
+                title="Log Out / Switch Account"
+                className="border border-neutral-800 hover:border-neutral-600 bg-[#0f0f0f] text-neutral-400 hover:text-white px-2 py-1.5 rounded-xl text-[10px] font-mono transition-colors"
+              >
+                Exit
+              </button>
             </div>
           </div>
 
@@ -358,13 +488,14 @@ export default function Home() {
                 <div className="absolute inset-0 wireframe-grid pointer-events-none opacity-40"></div>
 
                 <div className="relative z-10 space-y-5 font-sans">
+                  
                   <div className="flex items-center justify-between border-b border-neutral-800/80 pb-3">
                     <div>
-                      <h2 className="text-sm font-black text-white uppercase tracking-wider">New Reel Clone Job</h2>
-                      <p className="text-[11px] text-neutral-400">1 generation = 1 credit</p>
+                      <h2 className="text-sm font-black text-white uppercase tracking-wider">Product Reel Cloning</h2>
+                      <p className="text-[11px] text-neutral-400">Replaces only the product inside the reel with your photos</p>
                     </div>
                     <span className="text-[10px] font-mono text-neutral-400 bg-neutral-900 border border-neutral-800 px-2 py-0.5 rounded">
-                      SPATIAL 3D
+                      SAM 2 + 3D
                     </span>
                   </div>
 
@@ -380,27 +511,31 @@ export default function Home() {
                       type="text"
                       value={reelUrl}
                       onChange={(e) => setReelUrl(e.target.value)}
-                      placeholder="Paste Instagram Reel link here..."
+                      placeholder="https://www.instagram.com/reel/..."
                       className="w-full bg-[#121212] border border-neutral-800 focus:border-white px-4 py-3 rounded-2xl text-xs text-white placeholder-neutral-500 focus:outline-none transition-all font-mono"
                     />
+                    <p className="text-[10px] text-neutral-500">
+                      AI will keep the exact background, camera motion, and audio of this reel.
+                    </p>
                   </div>
 
-                  {/* Input 2: Real File Upload for Subject */}
+                  {/* Input 2: Multiple Photos Upload (Photos Only - No Video) */}
                   <div className="space-y-1.5">
                     <label className="text-xs font-bold text-neutral-300 tracking-wider flex items-center justify-between uppercase">
                       <span className="flex items-center gap-2">
                         <span className="w-2 h-2 bg-white rounded-full"></span>
-                        <span>2. Upload Your Subject (Photos or Video)</span>
+                        <span>2. Upload Your Product Photos (Multiple Angles)</span>
                       </span>
-                      <span className="text-[10px] text-neutral-400 font-mono">ANY FORMAT</span>
+                      <span className="text-[10px] text-neutral-400 font-mono">PHOTOS ONLY</span>
                     </label>
 
-                    {/* Hidden Native File Input */}
+                    {/* Hidden Native File Input with multiple attribute & images only */}
                     <input
                       type="file"
                       ref={fileInputRef}
-                      onChange={handleFileChange}
-                      accept="image/*,video/*"
+                      onChange={handleFilesChange}
+                      accept="image/*"
+                      multiple
                       className="hidden"
                     />
 
@@ -414,36 +549,40 @@ export default function Home() {
                         isDragging ? 'border-white bg-neutral-900' : 'border-neutral-800 hover:border-white bg-[#121212]/70'
                       }`}
                     >
-                      {subjectDataUrl ? (
-                        <div className="flex flex-col items-center gap-3">
-                          <div className="w-24 h-24 rounded-xl overflow-hidden border border-white/40 shadow-xl bg-black">
-                            {subjectDataUrl.startsWith('data:video') ? (
-                              <video src={subjectDataUrl} className="w-full h-full object-cover" autoPlay muted loop />
-                            ) : (
-                              <img src={subjectDataUrl} alt="Preview" className="w-full h-full object-cover" />
-                            )}
+                      {uploadedPhotos.length > 0 ? (
+                        <div className="space-y-3">
+                          {/* Thumbnail Gallery of Selected Photos */}
+                          <div className="flex items-center justify-center gap-2 flex-wrap max-h-36 overflow-y-auto p-1">
+                            {uploadedPhotos.map((photoUrl, idx) => (
+                              <div key={idx} className="w-16 h-16 rounded-xl overflow-hidden border border-white/40 shadow-lg bg-black relative">
+                                <img src={photoUrl} alt={`Angle ${idx + 1}`} className="w-full h-full object-cover" />
+                                <span className="absolute bottom-0.5 right-0.5 bg-black/80 px-1 rounded text-[8px] font-mono text-white">
+                                  #{idx + 1}
+                                </span>
+                              </div>
+                            ))}
                           </div>
                           <div>
                             <div className="text-xs font-bold text-white flex items-center justify-center gap-1.5">
                               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-                              <span>{selectedFileName || 'Subject File Attached'}</span>
+                              <span>{uploadedPhotos.length} Product Photos Attached</span>
                             </div>
-                            <p className="text-[10px] text-neutral-400 mt-0.5">Click or drop to replace file</p>
+                            <p className="text-[10px] text-neutral-400 mt-0.5">Click or drop to add more or replace</p>
                           </div>
                         </div>
                       ) : (
                         <div>
                           <div className="w-10 h-10 mx-auto rounded-xl bg-neutral-900 border border-neutral-800 flex items-center justify-center text-lg text-white group-hover:scale-110 transition-transform">
-                            📁
+                            📷
                           </div>
                           <p className="mt-2 text-xs font-bold text-white tracking-wide">
-                            Click or Drop Your Photos or Video Here
+                            Click to Select Multiple Product Photos
                           </p>
                           <p className="text-[11px] text-neutral-400 mt-0.5">
-                            Vehicle, person, fashion, watch, or any product
+                            Upload 1 to 4 clear photos (Front, Side, 45° angle)
                           </p>
                           <span className="mt-3 inline-block bg-neutral-900 border border-neutral-700 text-neutral-300 text-[10px] font-mono px-3 py-1 rounded-full">
-                            Browse Files
+                            Select Photos (Multiple)
                           </span>
                         </div>
                       )}
@@ -454,7 +593,7 @@ export default function Home() {
                         type="text"
                         value={subjectName}
                         onChange={(e) => setSubjectName(e.target.value)}
-                        placeholder="Subject name (e.g. Matte Black Yamaha R15)"
+                        placeholder="Product Name / Model (e.g. Continental GT 650, Sneaker, Watch)"
                         className="w-full bg-[#121212] border border-neutral-800 focus:border-white px-3 py-2 rounded-xl text-xs text-white placeholder-neutral-500 font-mono focus:outline-none"
                       />
                     </div>
@@ -477,7 +616,7 @@ export default function Home() {
                         }`}
                       >
                         <div className="flex items-start justify-between">
-                          <span className="text-xs font-black">USE REEL AUDIO</span>
+                          <span className="text-xs font-black">KEEP REEL AUDIO</span>
                           <input
                             type="radio"
                             name="audio"
@@ -487,7 +626,7 @@ export default function Home() {
                           />
                         </div>
                         <p className={`text-[10px] mt-1 font-medium ${audioOption === 'original' ? 'text-neutral-700' : 'text-neutral-400'}`}>
-                          Retains beat drops & sound
+                          Retains original music & beat drops
                         </p>
                       </div>
 
@@ -510,7 +649,7 @@ export default function Home() {
                           />
                         </div>
                         <p className={`text-[10px] mt-1 ${audioOption === 'custom' ? 'text-neutral-700' : 'text-neutral-400'}`}>
-                          Upload MP3 or silent
+                          Upload MP3 or generate silent
                         </p>
                       </div>
                     </div>
@@ -522,7 +661,7 @@ export default function Home() {
                       onClick={() => handleStartGeneration(false)}
                       className="w-full py-4 bg-white hover:bg-neutral-200 text-black font-black text-xs tracking-widest uppercase rounded-2xl shadow-xl transition-all flex items-center justify-center gap-2"
                     >
-                      <span>CLONE REEL (CONSUMES 1 CREDIT)</span>
+                      <span>REPLACE PRODUCT IN REEL (1 CREDIT)</span>
                       <span>→</span>
                     </button>
                   </div>
@@ -538,7 +677,7 @@ export default function Home() {
                   <div className="text-white font-mono text-xs font-black">FNM</div>
                 </div>
                 <div className="space-y-1">
-                  <h3 className="text-sm font-black text-white uppercase tracking-wider">AI Cloning in Progress</h3>
+                  <h3 className="text-sm font-black text-white uppercase tracking-wider">Swapping Product in Reel</h3>
                   <p className="text-xs text-neutral-400 font-mono">{progressText}</p>
                 </div>
                 <div className="max-w-md mx-auto space-y-1.5">
@@ -563,15 +702,15 @@ export default function Home() {
                   <div>
                     <h3 className="text-sm font-black text-white uppercase tracking-wider flex items-center gap-2">
                       <span className="w-2 h-2 rounded-full bg-white"></span>
-                      Job Completed & Saved to Account
+                      Product Replaced Successfully!
                     </h3>
-                    <p className="text-xs text-neutral-400 font-mono">Added to your client library</p>
+                    <p className="text-xs text-neutral-400 font-mono">Original camera motion & audio synced with your product</p>
                   </div>
                   <button
                     onClick={() => {
                       setClonedResult(null);
-                      setSubjectDataUrl(null);
-                      setSelectedFileName(null);
+                      setUploadedPhotos([]);
+                      setPhotoNames([]);
                     }}
                     className="border border-neutral-800 hover:border-neutral-600 text-xs px-3 py-1.5 rounded-xl text-neutral-400 font-mono"
                   >
@@ -581,7 +720,7 @@ export default function Home() {
 
                 <div className="grid grid-cols-2 gap-4 justify-items-center">
                   <div className="space-y-1 text-center w-full">
-                    <span className="text-[10px] text-neutral-400 font-mono">ORIGINAL</span>
+                    <span className="text-[10px] text-neutral-400 font-mono">ORIGINAL REEL</span>
                     <div className="reel-aspect w-full max-w-[180px] mx-auto bg-black border border-neutral-800 rounded-xl overflow-hidden relative">
                       <img
                         src={clonedResult.originalPreviewUrl}
@@ -591,7 +730,7 @@ export default function Home() {
                     </div>
                   </div>
                   <div className="space-y-1 text-center w-full">
-                    <span className="text-[10px] font-bold text-white font-mono">CLONED OUTPUT</span>
+                    <span className="text-[10px] font-bold text-white font-mono">YOUR PRODUCT REEL</span>
                     <div className="reel-aspect w-full max-w-[180px] mx-auto bg-black border-2 border-white rounded-xl overflow-hidden relative shadow-lg">
                       {clonedResult.previewUrl.startsWith('data:video') || clonedResult.previewUrl.endsWith('.mp4') ? (
                         <video src={clonedResult.previewUrl} className="w-full h-full object-cover" autoPlay muted loop controls />
@@ -731,28 +870,12 @@ export default function Home() {
             <div className="space-y-3 text-xs">
               <div className="p-3.5 bg-neutral-900/90 border border-neutral-800 rounded-2xl space-y-2">
                 <div className="flex items-center justify-between">
-                  <span className="font-bold text-white">Recommended: Fal.ai (Free Trial Available)</span>
-                  <span className="text-[10px] font-mono text-emerald-400">Fastest</span>
+                  <span className="font-bold text-white">Fal.ai Connected</span>
+                  <span className="text-[10px] font-mono text-emerald-400">Active</span>
                 </div>
                 <p className="text-[11px] text-neutral-400">
-                  Offers free trial credits upon signup. Supports <b>Wan 2.1 Video-to-Video</b> and <b>SAM 2</b>.
+                  Using <b>fal-ai/ltx-video/image-to-video</b> and <b>SAM 2</b> to swap your product photos into the reel.
                 </p>
-                <div className="text-[11px] font-mono text-neutral-300 bg-black/60 p-2 rounded-lg border border-neutral-800">
-                  Environment Variable: <span className="text-white font-bold">FAL_KEY</span>
-                </div>
-              </div>
-
-              <div className="p-3.5 bg-neutral-900/90 border border-neutral-800 rounded-2xl space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="font-bold text-white">Alternative: Replicate</span>
-                  <span className="text-[10px] font-mono text-neutral-400">Pay-as-you-go</span>
-                </div>
-                <p className="text-[11px] text-neutral-400">
-                  Supports <b>Lightricks LTX Video</b>, <b>Kling</b>, and <b>Hunyuan Video</b>.
-                </p>
-                <div className="text-[11px] font-mono text-neutral-300 bg-black/60 p-2 rounded-lg border border-neutral-800">
-                  Environment Variable: <span className="text-white font-bold">REPLICATE_API_TOKEN</span>
-                </div>
               </div>
             </div>
 
@@ -760,15 +883,12 @@ export default function Home() {
               <button
                 onClick={() => {
                   setShowConfigModal(false);
-                  handleStartGeneration(true); // Run with user's uploaded asset in instant render mode
+                  handleStartGeneration(true);
                 }}
                 className="w-full py-3 bg-white hover:bg-neutral-200 text-black font-black text-xs uppercase tracking-wider rounded-xl transition-all"
               >
-                Test Now With My Uploaded Subject (Local Render)
+                Test With Uploaded Photos (Instant Render)
               </button>
-              <p className="text-[10px] text-neutral-500 text-center font-mono">
-                Add keys in Vercel: Project Settings → Environment Variables
-              </p>
             </div>
           </div>
         </div>
@@ -848,55 +968,6 @@ export default function Home() {
               <span>•</span>
               <span>✓ ALL CARDS & NETBANKING</span>
             </div>
-          </div>
-        </div>
-      )}
-
-      {/* MODAL 2: EMAIL LOGIN / SIGNUP */}
-      {showAuthModal && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-[#0d0d0d] border border-neutral-800 max-w-sm w-full p-6 md:p-8 rounded-3xl mono-glow space-y-5 relative font-sans">
-            <button
-              onClick={() => setShowAuthModal(false)}
-              className="absolute top-4 right-4 text-neutral-500 hover:text-white text-lg"
-            >
-              ✕
-            </button>
-
-            <div className="text-center space-y-1">
-              <div className="w-10 h-10 mx-auto rounded-xl bg-white text-black flex items-center justify-center font-black text-sm">
-                FNM
-              </div>
-              <h3 className="text-lg font-black text-white uppercase tracking-wider pt-1">
-                Client Login
-              </h3>
-              <p className="text-xs text-neutral-400">Access your created reels and credits</p>
-            </div>
-
-            <form onSubmit={handleAuthSubmit} className="space-y-3">
-              <div className="space-y-1">
-                <label className="text-[11px] font-bold text-neutral-300">Your Email Address</label>
-                <input
-                  type="email"
-                  value={emailInput}
-                  onChange={(e) => setEmailInput(e.target.value)}
-                  className="w-full bg-[#141414] border border-neutral-800 px-3 py-2.5 rounded-xl text-xs text-white focus:outline-none focus:border-white font-mono"
-                  placeholder="name@company.com"
-                  required
-                />
-              </div>
-
-              <button
-                type="submit"
-                className="w-full py-3 bg-white hover:bg-neutral-200 text-black font-black text-xs uppercase tracking-wider rounded-xl transition-all"
-              >
-                Continue with Email
-              </button>
-            </form>
-
-            <p className="text-[10px] text-neutral-500 text-center font-mono">
-              Instant access • No password needed
-            </p>
           </div>
         </div>
       )}

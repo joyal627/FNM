@@ -4,7 +4,7 @@ import { dispatchAiVideoJob } from '@/lib/ai-provider';
 
 export async function POST(req: Request) {
   try {
-    const { email, reelUrl, subjectName, audioOption, customSubjectImage, forceDemo } = await req.json();
+    const { email, reelUrl, subjectName, audioOption, customSubjectImage, subjectImages, forceDemo } = await req.json();
 
     if (!email) {
       return NextResponse.json({ error: 'Email is required' }, { status: 400 });
@@ -25,12 +25,21 @@ export async function POST(req: Request) {
       );
     }
 
+    const imagesList: string[] = subjectImages && Array.isArray(subjectImages) && subjectImages.length > 0
+      ? subjectImages
+      : (customSubjectImage ? [customSubjectImage] : []);
+
+    const primaryImage = imagesList.length > 0
+      ? imagesList[0]
+      : 'https://images.unsplash.com/photo-1568772585407-9361f9bf3a87?w=600&auto=format&fit=crop&q=80';
+
     // Attempt real AI dispatch if not forced demo
     if (!forceDemo) {
       const aiResponse = await dispatchAiVideoJob({
         reelUrl,
-        subjectImage: customSubjectImage || 'https://images.unsplash.com/photo-1568772585407-9361f9bf3a87?w=600&auto=format&fit=crop&q=80',
-        subjectName: subjectName || 'Subject',
+        subjectImage: primaryImage,
+        subjectImages: imagesList,
+        subjectName: subjectName || 'Product',
         audioOption: audioOption || 'original',
       });
 
@@ -65,19 +74,17 @@ export async function POST(req: Request) {
           success: false,
           error: aiResponse.message || 'AI generation service failed',
           allowFallback: true,
-        }, { status: 200 }); // return 200 with allowFallback so frontend can seamlessly fallback to user's uploaded asset!
+        }, { status: 200 });
       }
     }
 
-    // Fallback/Instant render using the user's actual uploaded image/video
-    const previewUrl = customSubjectImage || 'https://images.unsplash.com/photo-1568772585407-9361f9bf3a87?w=600&auto=format&fit=crop&q=80';
-    
+    // Fallback/Instant render using the user's actual uploaded photos
     const newReel: ClonedReel = {
       id: `reel-${Date.now()}`,
       userEmail: email,
       sourceUrl: reelUrl,
-      subjectTitle: subjectName || 'Custom Subject',
-      previewUrl: previewUrl,
+      subjectTitle: subjectName || 'Custom Product',
+      previewUrl: primaryImage,
       originalPreviewUrl: 'https://images.unsplash.com/photo-1558981403-c5f9899a28bc?w=600&auto=format&fit=crop&q=80',
       audioOption: audioOption || 'original',
       createdAt: 'Just now',

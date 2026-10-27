@@ -6,7 +6,8 @@
 
 export interface GenerationRequest {
   reelUrl: string;
-  subjectImage: string; // Base64 or public URL
+  subjectImage?: string;
+  subjectImages?: string[]; // Multiple photos of the client's product
   subjectName: string;
   audioOption: 'original' | 'custom';
 }
@@ -25,16 +26,23 @@ export async function dispatchAiVideoJob(req: GenerationRequest): Promise<Genera
   const falKey = process.env.FAL_KEY;
   const replicateToken = process.env.REPLICATE_API_TOKEN;
 
+  const primaryImage = (req.subjectImages && req.subjectImages.length > 0)
+    ? req.subjectImages[0]
+    : req.subjectImage || 'https://images.unsplash.com/photo-1568772585407-9361f9bf3a87?w=600&auto=format&fit=crop&q=80';
+
+  const allImages = req.subjectImages && req.subjectImages.length > 0
+    ? req.subjectImages
+    : (req.subjectImage ? [req.subjectImage] : [primaryImage]);
+
   // 1. Fal.ai Provider
   if (falKey) {
     try {
-      // Determine best endpoint based on whether we have video or image
       // fal-ai/ltx-video/image-to-video is the fastest and most reliable for 9:16 mobile reels
       const endpoint = 'fal-ai/ltx-video/image-to-video';
       
       const payload: Record<string, any> = {
-        prompt: `Cinematic vertical 9:16 instagram reel of ${req.subjectName}, commercial automotive lighting, realistic motion, 4k ultra detailed, 60fps`,
-        image_url: req.subjectImage || 'https://images.unsplash.com/photo-1568772585407-9361f9bf3a87?w=600&auto=format&fit=crop&q=80',
+        prompt: `Cinematic vertical 9:16 instagram reel replacing the original product with ${req.subjectName}, matching the exact camera motion, dynamic commercial lighting, photorealistic, 60fps`,
+        image_url: primaryImage,
       };
 
       const response = await fetch(`https://queue.fal.run/${endpoint}`, {
@@ -47,7 +55,7 @@ export async function dispatchAiVideoJob(req: GenerationRequest): Promise<Genera
       });
 
       if (!response.ok) {
-        // Try fallback to Wan VACE video edit or LTX standard
+        // Fallback to Wan VACE video edit with multiple reference images
         const fallbackEndpoint = 'fal-ai/wan-vace-apps/video-edit';
         const fallbackRes = await fetch(`https://queue.fal.run/${fallbackEndpoint}`, {
           method: 'POST',
@@ -56,11 +64,11 @@ export async function dispatchAiVideoJob(req: GenerationRequest): Promise<Genera
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
-            prompt: `Transform into cinematic commercial of ${req.subjectName}`,
+            prompt: `Replace the vehicle/product in the video with ${req.subjectName} from reference photos`,
             video_url: req.reelUrl.startsWith('http') && req.reelUrl.includes('.mp4') 
               ? req.reelUrl 
               : 'https://storage.googleapis.com/falserverless/example_inputs/vace-video-edit-input.mp4',
-            image_urls: req.subjectImage ? [req.subjectImage] : [],
+            image_urls: allImages,
           }),
         });
 
@@ -111,7 +119,7 @@ export async function dispatchAiVideoJob(req: GenerationRequest): Promise<Genera
           version: 'lightricks/ltx-video',
           input: {
             prompt: `Cinematic 9:16 reel of ${req.subjectName}, realistic lighting, smooth camera movement`,
-            input_image: req.subjectImage,
+            input_image: primaryImage,
             aspect_ratio: '9:16',
           },
         }),
